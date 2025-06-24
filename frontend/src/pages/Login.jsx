@@ -1,5 +1,6 @@
 import React, {  useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate} from 'react-router-dom';
+import { toast } from 'sonner';
 import { loginUser } from "../redux/slices/authSlice";
 import {mergeCart}  from "../redux/slices/cartSlice";
 import { useDispatch, useSelector } from 'react-redux';
@@ -11,7 +12,7 @@ const Login = () => {
     const dispatch = useDispatch();
     const navigate = useNavigate();
     const location = useLocation();
-    const { user, guestId} = useSelector((state) => state.auth);
+    const { user, guestId, error } = useSelector((state) => state.auth);
     const {cart} = useSelector((state) => state.cart);
 
     const redirect = new URLSearchParams(location.search).get("redirect") || "/";
@@ -28,6 +29,13 @@ const Login = () => {
             }
         }
     }, [ user, guestId, cart, navigate, isCheckoutRedirect, dispatch]);
+
+        // Show error toast if login fails
+    useEffect(() => {
+        if (error) {
+            toast.error("Invalid Email or Password"); // Display error from Redux
+        }
+    }, [error]);
 
  const handleSubmit = (e) => {
           e.preventDefault();
