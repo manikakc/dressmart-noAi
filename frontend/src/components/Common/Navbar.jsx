@@ -101,6 +101,7 @@ const Navbar = () => {
           <h2 className='text-xl font-semibold mb-4'>Menu</h2>
 
           {/* SearchBar inside mobile nav */}
+          {/* searchbar */}
           <div className="mb-4">
             <SearchBar />
           </div>
