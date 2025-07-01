@@ -1,6 +1,7 @@
 const express = require("express");
 const Product = require("../models/Product");
 const { protect, admin } = require("../middleware/authMiddleware");
+const Checkout = require("../models/Checkout");
 
 const router = express.Router();
 
@@ -383,5 +384,110 @@ router.delete("/:productId/review/:reviewId", protect, admin, async (req, res) =
   }
 });
 
+const getAllCategories = async () => {
+  const categories = await Product.distinct("category");
+  return categories.sort();
+};
+
+const buildProductFeatureMap = async (allCategories) => {
+  const products = await Product.find({}, "_id price averageRating category");
+  const categoryIndex = Object.fromEntries(allCategories.map((cat, i) => [cat, i]));
+
+  const featureMap = {};
+  for (let product of products) {
+    const oneHot = Array(allCategories.length).fill(0);
+    const catIdx = categoryIndex[product.category];
+    if (catIdx !== undefined) oneHot[catIdx] = 1;
+
+    featureMap[product._id.toString()] = [
+      product.price || 0,
+      product.averageRating || 0,
+      ...oneHot,
+    ];
+  }
+  return featureMap;
+};
+
+const buildUserVectors = async (featureMap, allCategories) => {
+  const checkouts = await Checkout.find({}, "user checkoutItems.productId").populate("checkoutItems.productId");
+
+  const userVectors = {};
+  const userProductMap = {};
+
+  for (let checkout of checkouts) {
+    const userId = checkout.user.toString();
+    userProductMap[userId] = userProductMap[userId] || new Set();
+
+    let features = [];
+    for (let item of checkout.checkoutItems) {
+      const pid = item.productId?._id?.toString();
+      if (pid && featureMap[pid]) {
+        features.push(featureMap[pid]);
+        userProductMap[userId].add(pid);
+      }
+    }
+
+    if (features.length > 0) {
+      const dim = features[0].length;
+      const avg = Array(dim).fill(0);
+      for (let vec of features) {
+        for (let i = 0; i < dim; i++) avg[i] += vec[i];
+      }
+      for (let i = 0; i < dim; i++) avg[i] /= features.length;
+      userVectors[userId] = avg;
+    }
+  }
+
+  return { userVectors, userProductMap };
+};
+
+const cosineSim = (a, b) => {
+  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const normA = Math.sqrt(a.reduce((sum, val) => sum + val ** 2, 0));
+  const normB = Math.sqrt(b.reduce((sum, val) => sum + val ** 2, 0));
+  return normA && normB ? dot / (normA * normB) : 0;
+};
+
+router.get("/recommendations/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const categories = await getAllCategories();
+    const productFeatureMap = await buildProductFeatureMap(categories);
+    const { userVectors, userProductMap } = await buildUserVectors(productFeatureMap, categories);
+
+    const targetVector = userVectors[userId];
+    if (!targetVector) return res.status(404).json({ error: "User vector not found" });
+
+    const K = 5;
+    const similarities = Object.entries(userVectors)
+      .filter(([uid]) => uid !== userId)
+      .map(([uid, vec]) => ({ uid, score: cosineSim(targetVector, vec) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, K);
+
+    const seen = userProductMap[userId] || new Set();
+    const productScores = {};
+
+    for (let { uid, score } of similarities) {
+      for (let pid of userProductMap[uid] || []) {
+        if (!seen.has(pid)) {
+          productScores[pid] = (productScores[pid] || 0) + score;
+        }
+      }
+    }
+
+    const topProducts = Object.entries(productScores)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([pid]) => pid);
+
+    const recommendedProducts = await Product.find({ _id: { $in: topProducts } });
+
+    res.json({ recommended: recommendedProducts });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 module.exports = router;
